@@ -17,6 +17,8 @@ import (
 func (c *Config) GetREALITYConfig() *reality.Config {
 	var dialer net.Dialer
 	config := &reality.Config{
+		IgnoreClientHelloKeyShearMismatch: c.IgnoreClientHelloKeyShearMismatch,
+
 		DialContext: dialer.DialContext,
 
 		Show: c.Show,

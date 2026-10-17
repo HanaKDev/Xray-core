@@ -25,6 +25,9 @@ type LimitFallback struct {
 }
 
 type REALITYConfig struct {
+	// Server-only, per-inbound escape hatch for legacy relay ClientHello key shares.
+	IgnoreClientHelloKeyShearMismatch bool `json:"ignoreClientHelloKeyShearMismatch"`
+
 	MasterKeyLog string          `json:"masterKeyLog"`
 	Show         bool            `json:"show"`
 	Target       json.RawMessage `json:"target"`
@@ -60,6 +63,7 @@ func (c *REALITYConfig) Build() (proto.Message, error) {
 		c.Dest = c.Target
 	}
 	if c.Dest != nil {
+		config.IgnoreClientHelloKeyShearMismatch = c.IgnoreClientHelloKeyShearMismatch
 		var i uint16
 		var s string
 		if err = json.Unmarshal(c.Dest, &i); err == nil {
@@ -177,6 +181,9 @@ func (c *REALITYConfig) Build() (proto.Message, error) {
 		config.LimitFallbackDownload.BytesPerSec = c.LimitFallbackDownload.BytesPerSec
 		config.LimitFallbackDownload.BurstBytesPerSec = c.LimitFallbackDownload.BurstBytesPerSec
 	} else {
+		if c.IgnoreClientHelloKeyShearMismatch {
+			return nil, errors.New(`"ignoreClientHelloKeyShearMismatch" is only supported on REALITY server inbounds`)
+		}
 		config.Fingerprint = strings.ToLower(c.Fingerprint)
 		if config.Fingerprint == "unsafe" || config.Fingerprint == "hellogolang" {
 			return nil, errors.New(`invalid "fingerprint": `, config.Fingerprint)
