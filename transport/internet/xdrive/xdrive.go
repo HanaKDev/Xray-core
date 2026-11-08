@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -23,6 +25,11 @@ const (
 	streamsDir   = "streams"
 	uplinkDir    = "c2s"
 	downlinkDir  = "s2c"
+)
+
+const (
+	spareCount    = 2
+	spareIdleStop = 10 * time.Minute
 )
 
 func init() {
@@ -77,32 +84,174 @@ func streamConfig(streamSettings *internet.MemoryStreamConfig) (*Config, error) 
 	return config, nil
 }
 
+type spareRing struct {
+	storage Storage
+	session string
+	ring    ring
+	at      time.Time
+}
+
+type spareBox struct {
+	ch   chan spareRing
+	busy atomic.Bool
+	last atomic.Int64
+	stop atomic.Bool
+}
+
+var spareBoxes sync.Map
+
+func spareBoxFor(config *Config) *spareBox {
+	if b, ok := spareBoxes.Load(config); ok {
+		return b.(*spareBox)
+	}
+	b, _ := spareBoxes.LoadOrStore(config, &spareBox{ch: make(chan spareRing, spareCount)})
+	return b.(*spareBox)
+}
+
+func dropSpare(s spareRing) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s.storage.Delete(ctx, sessionPrefix(s.session))
+	s.storage.Close()
+}
+
+func takeSpare(config *Config, p params) (spareRing, bool) {
+	box := spareBoxFor(config)
+	for {
+		select {
+		case s := <-box.ch:
+			if time.Since(s.at) < p.sessionTTL*2/3 {
+				return s, true
+			}
+			go dropSpare(s)
+		default:
+			return spareRing{}, false
+		}
+	}
+}
+
+func warmSpares(streamSettings *internet.MemoryStreamConfig, config *Config, p params) {
+	spareBoxFor(config).last.Store(time.Now().UnixNano())
+	fillSpares(streamSettings, config, p)
+}
+
+func fillSpares(streamSettings *internet.MemoryStreamConfig, config *Config, p params) {
+	box := spareBoxFor(config)
+	if !box.busy.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer box.busy.Store(false)
+		for n := len(box.ch); n > 0; n-- {
+			select {
+			case s := <-box.ch:
+				if time.Since(s.at) < p.sessionTTL/3 {
+					box.ch <- s
+				} else {
+					dropSpare(s)
+				}
+			default:
+			}
+		}
+		for len(box.ch) < cap(box.ch) {
+			for range 40 {
+				if box.stop.Load() {
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			if box.stop.Load() {
+				return
+			}
+			storage, err := newStorage(streamSettings)
+			if err != nil {
+				return
+			}
+			storage = sessionStorage(storage)
+			slots, ok := storage.(slotStore)
+			if !ok {
+				storage.Close()
+				return
+			}
+			session, err := newSessionID()
+			if err != nil {
+				storage.Close()
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			r, err := makeRing(ctx, slots, session, p)
+			cancel()
+			if err != nil {
+				dropSpare(spareRing{storage: storage, session: session})
+				return
+			}
+			select {
+			case box.ch <- spareRing{storage: storage, session: session, ring: r, at: time.Now()}:
+			default:
+				storage.Close()
+				return
+			}
+		}
+		time.AfterFunc(p.sessionTTL/4, func() {
+			if !box.stop.Load() && time.Since(time.Unix(0, box.last.Load())) < spareIdleStop {
+				fillSpares(streamSettings, config, p)
+			}
+		})
+	}()
+}
+
 func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.MemoryStreamConfig) (stat.Connection, error) {
 	config, err := streamConfig(streamSettings)
 	if err != nil {
 		return nil, err
 	}
 
-	storage, err := newStorage(streamSettings)
-	if err != nil {
-		return nil, err
+	p := paramsFromConfig(config)
+
+	spare, warm := takeSpare(config, p)
+	storage, session, r := spare.storage, spare.session, spare.ring
+	if !warm {
+		storage, err = newStorage(streamSettings)
+		if err != nil {
+			return nil, err
+		}
+		storage = sessionStorage(storage)
+
+		session, err = newSessionID()
+		if err != nil {
+			storage.Close()
+			return nil, err
+		}
 	}
 
-	session, err := newSessionID()
-	if err != nil {
-		storage.Close()
-		return nil, err
+	var announce []byte
+	slots, ok := storage.(slotStore)
+	if ok {
+		if warm {
+			announce, _ = json.Marshal(r)
+		} else if r, err = makeRing(ctx, slots, session, p); err == nil {
+			announce, _ = json.Marshal(r)
+		} else {
+			ok = false
+			errors.LogWarningInner(ctx, err, "failed to make the slots of session ", session, ", it goes in segments")
+		}
 	}
 
-	if err := storage.Put(ctx, announceName(session, time.Now()), nil); err != nil {
+	if err := storage.Put(ctx, announceName(session, time.Now()), announce); err != nil {
 		storage.Close()
 		return nil, errors.New("failed to announce session ", session).Base(err)
 	}
 
+	if ok {
+		warmSpares(streamSettings, config, p)
+		errors.LogInfo(ctx, "opened session ", session, " in ", len(r.Up.Slots), " slots")
+		return newSlotConn(context.Background(), slots, r.Up, r.Down, p, func() {
+			storage.Close()
+		}), nil
+	}
 	errors.LogInfo(ctx, "opened session ", session)
-
 	return newConn(context.Background(), storage,
-		uplinkPrefix(session), downlinkPrefix(session), paramsFromConfig(config), func() {
+		uplinkPrefix(session), downlinkPrefix(session), p, func() {
 			storage.Close()
 		}), nil
 }
@@ -205,9 +354,8 @@ func (l *Listener) acceptPending(logCtx context.Context) (bool, error) {
 			continue
 		}
 		go l.drop(full)
-		errors.LogInfo(logCtx, "accepted session ", session)
 		accepted = true
-		l.addConn(l.newSessionConn(session))
+		l.addConn(l.newSessionConn(logCtx, session, listed.Inline))
 	}
 	return accepted, nil
 }
@@ -227,13 +375,24 @@ func (l *Listener) claim(session string) bool {
 	return true
 }
 
-func (l *Listener) newSessionConn(session string) *Conn {
-	return newConn(l.ctx, l.storage,
-		downlinkPrefix(session), uplinkPrefix(session), l.params, func() {
-			l.mu.Lock()
-			delete(l.active, session)
-			l.mu.Unlock()
-		})
+// newSessionConn takes a session in the slots that its announcement has, or
+// in segments if it has none
+func (l *Listener) newSessionConn(logCtx context.Context, session string, announce []byte) *Conn {
+	storage := sessionStorage(l.storage)
+	onClose := func() {
+		storage.Close()
+		l.mu.Lock()
+		delete(l.active, session)
+		l.mu.Unlock()
+	}
+	if slots, ok := storage.(slotStore); ok {
+		if r, ok := decodeRing(announce); ok {
+			errors.LogInfo(logCtx, "accepted session ", session, " in ", len(r.Down.Slots), " slots")
+			return newSlotConn(l.ctx, slots, r.Down, r.Up, l.params, onClose)
+		}
+	}
+	errors.LogInfo(logCtx, "accepted session ", session)
+	return newConn(l.ctx, storage, downlinkPrefix(session), uplinkPrefix(session), l.params, onClose)
 }
 
 func (l *Listener) collectLoop(logCtx context.Context) {
@@ -290,12 +449,13 @@ func (l *Listener) collect() error {
 	}
 	l.mu.Unlock()
 
+	var first error
 	for _, session := range expired {
-		if err := l.storage.Delete(l.ctx, sessionPrefix(session)); err != nil {
-			return err
+		if err := l.storage.Delete(l.ctx, sessionPrefix(session)); err != nil && first == nil {
+			first = err
 		}
 	}
-	return nil
+	return first
 }
 
 func (l *Listener) Addr() net.Addr {

@@ -1,6 +1,15 @@
 # Per-inbound REALITY relay compatibility
 
-Based on Xray-core `92ccc939aaf4f8965f369cf0b142e005aeaa11d5` (26.10.17).
+Originally based on Xray-core `92ccc939aaf4f8965f369cf0b142e005aeaa11d5` (26.10.17).
+
+Merged upstream main through `1c8bf4067b881e5f21442882013d0617e4d5dc6d` on
+2026-11-08 (Asia/Hong_Kong). The per-inbound option, its protobuf field number
+14, and the embedded REALITY patch are unchanged. Upstream REALITY remains at
+`83f621788ca8`. Upstream dependency updates and key-log file mode 0600 are retained.
+
+Merge validation with Go 1.27.3: the targeted config/handshake regression tests
+with `-race` passed in all three packages, and CGO-disabled Linux amd64
+compilation of `./main` succeeded. Full upstream suites were not rerun.
 
 ## Configuration
 
