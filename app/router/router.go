@@ -2,7 +2,11 @@ package router
 
 import (
 	"context"
+	"fmt"
+	"google.golang.org/protobuf/proto"
 	"maps"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -27,6 +31,9 @@ type Router struct {
 	ctx        context.Context
 	ohm        outbound.Manager
 	dispatcher routing.Dispatcher
+	current    *Config
+	revision   uint64
+	locked     map[string]bool
 	mu         sync.Mutex
 }
 
@@ -40,6 +47,12 @@ type Route struct {
 
 // Init initializes the Router.
 func (r *Router) Init(ctx context.Context, config *Config, d dns.Client, ohm outbound.Manager, dispatcher routing.Dispatcher) error {
+	r.locked = map[string]bool{}
+	for _, tag := range strings.Split(os.Getenv("XRAY_CATHODE_LOCKED_RULES"), ",") {
+		if tag != "" {
+			r.locked[tag] = true
+		}
+	}
 	r.domainStrategy = config.DomainStrategy
 	r.dns = d
 	r.ctx = ctx
@@ -56,7 +69,21 @@ func (r *Router) Init(ctx context.Context, config *Config, d dns.Client, ohm out
 
 	r.rules.Store(new([]*Rule))
 	r.balancers.Store(&map[string]*Balancer{})
-	return r.ReloadRules(config, false)
+	if e := r.ReloadRules(config, false); e != nil {
+		return e
+	}
+	for tag := range r.locked {
+		found := false
+		for _, rule := range config.Rule {
+			if rule.RuleTag == tag {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("locked bootstrap rule %s not found", tag)
+		}
+	}
+	return nil
 }
 
 // PickRoute implements routing.Router.
@@ -98,6 +125,30 @@ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
 
 	oldRules := *r.rules.Load()
 	oldBalancers := *r.balancers.Load()
+	candidate := proto.Clone(config).(*Config)
+	if shouldAppend && r.current != nil {
+		old := proto.Clone(r.current).(*Config)
+		old.Rule = append(old.Rule, candidate.Rule...)
+		old.BalancingRule = append(old.BalancingRule, candidate.BalancingRule...)
+		candidate = old
+	}
+	if r.current != nil {
+		for tag := range r.locked {
+			oldIndex := -1
+			for i, rule := range r.current.Rule {
+				if rule.RuleTag == tag {
+					oldIndex = i
+					break
+				}
+			}
+			if oldIndex < 0 || oldIndex >= len(candidate.Rule) || !proto.Equal(r.current.Rule[oldIndex], candidate.Rule[oldIndex]) {
+				return fmt.Errorf("locked rule %s changed or moved", tag)
+			}
+		}
+	}
+	if r.current != nil && (candidate.DomainStrategy != r.current.DomainStrategy || candidate.Script != r.current.Script) {
+		return fmt.Errorf("routing mode/script cannot change at runtime")
+	}
 
 	var newRules []*Rule
 	newBalancers := make(map[string]*Balancer)
@@ -155,6 +206,8 @@ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
 
 	r.balancers.Store(&newBalancers)
 	r.rules.Store(&newRules)
+	r.current = candidate
+	r.revision++
 	if !shouldAppend {
 		closeWebhooks(oldRules)
 	}
@@ -170,6 +223,9 @@ func (r *Router) RemoveRule(tag string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.locked[tag] {
+		return fmt.Errorf("rule %s is locked", tag)
+	}
 	oldRules := *r.rules.Load()
 	newRules := make([]*Rule, 0, len(oldRules))
 	var removed []*Rule
@@ -180,7 +236,25 @@ func (r *Router) RemoveRule(tag string) error {
 			removed = append(removed, rule)
 		}
 	}
+	if r.current != nil {
+		c := proto.Clone(r.current).(*Config)
+		c.Rule = nil
+		for _, v := range r.current.Rule {
+			if v.RuleTag != tag {
+				c.Rule = append(c.Rule, v)
+			}
+		}
+		for t := range r.locked {
+			for i, v := range r.current.Rule {
+				if v.RuleTag == t && (i >= len(c.Rule) || c.Rule[i].RuleTag != t) {
+					return fmt.Errorf("remove would move locked rule")
+				}
+			}
+		}
+		r.current = c
+	}
 	r.rules.Store(&newRules)
+	r.revision++
 	closeWebhooks(removed)
 	return nil
 }
@@ -291,4 +365,55 @@ func init() {
 		}
 		return r, nil
 	}))
+}
+
+func (r *Router) CathodeSnapshot() (*Config, uint64, map[string]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	locks := map[string]bool{}
+	for k, v := range r.locked {
+		locks[k] = v
+	}
+	return proto.Clone(r.current).(*Config), r.revision, locks
+}
+func (r *Router) CathodeReplace(c *Config, expected uint64, unlock, lock []string) error {
+	r.mu.Lock()
+	if r.revision != expected {
+		r.mu.Unlock()
+		return fmt.Errorf("stale routing revision")
+	}
+	before := r.locked
+	next := map[string]bool{}
+	for k, v := range before {
+		next[k] = v
+	}
+	for _, k := range unlock {
+		delete(next, k)
+	}
+	for _, k := range lock {
+		found := false
+		for _, v := range c.Rule {
+			if v.RuleTag == k {
+				found = true
+			}
+		}
+		if !found {
+			r.mu.Unlock()
+			return fmt.Errorf("cannot lock absent rule")
+		}
+	}
+	r.locked = next
+	r.mu.Unlock()
+	if e := r.ReloadRules(c, false); e != nil {
+		r.mu.Lock()
+		r.locked = before
+		r.mu.Unlock()
+		return e
+	}
+	r.mu.Lock()
+	for _, k := range lock {
+		r.locked[k] = true
+	}
+	r.mu.Unlock()
+	return nil
 }

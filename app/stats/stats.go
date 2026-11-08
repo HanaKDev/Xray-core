@@ -2,6 +2,8 @@ package stats
 
 import (
 	"context"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/xtls/xray-core/common"
@@ -11,6 +13,7 @@ import (
 
 // Manager is an implementation of stats.Manager.
 type Manager struct {
+	usage      *usageJournal
 	access     sync.RWMutex
 	counters   map[string]*Counter
 	onlineMaps map[string]*OnlineMap
@@ -26,12 +29,36 @@ func NewManager(ctx context.Context, config *Config) (*Manager, error) {
 		channels:   make(map[string]*Channel),
 	}
 
+	if path := os.Getenv("XRAY_CATHODE_USAGE_JOURNAL"); path != "" {
+		j, e := openUsage(path)
+		if e != nil {
+			return nil, e
+		}
+		m.usage = j
+		for name, value := range j.totals {
+			c := &Counter{value: value}
+			n := name
+			c.record = func(d int64) { j.add(n, d) }
+			m.counters[name] = c
+		}
+	}
 	return m, nil
 }
 
 // Type implements common.HasType.
 func (*Manager) Type() interface{} {
 	return stats.ManagerType()
+}
+
+func (m *Manager) makeCounter(name string) *Counter {
+	c := new(Counter)
+	if m.usage != nil && strings.HasPrefix(name, "user>>>") && strings.Contains(name, ">>>traffic>>>") {
+		m.usage.mu.Lock()
+		c.value = m.usage.totals[name]
+		m.usage.mu.Unlock()
+		c.record = func(d int64) { m.usage.add(name, d) }
+	}
+	return c
 }
 
 // RegisterCounter implements stats.Manager.
@@ -43,7 +70,7 @@ func (m *Manager) RegisterCounter(name string) (stats.Counter, error) {
 		return nil, errors.New("Counter ", name, " already registered.")
 	}
 	errors.LogDebug(context.Background(), "create new counter ", name)
-	c := new(Counter)
+	c := m.makeCounter(name)
 	m.counters[name] = c
 	return c, nil
 }
@@ -57,7 +84,7 @@ func (m *Manager) GetOrRegisterCounter(name string) (stats.Counter, error) {
 		return c, nil
 	}
 	errors.LogDebug(context.Background(), "create new counter ", name)
-	c := new(Counter)
+	c := m.makeCounter(name)
 	m.counters[name] = c
 	return c, nil
 }

@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/rand"
+	"google.golang.org/protobuf/proto"
 	"reflect"
 	"sync"
 
@@ -80,6 +82,10 @@ func (r *resolution) callbackResolution(allFeatures []features.Feature) error {
 
 // Instance combines all Xray features.
 type Instance struct {
+	CathodeMu                  sync.RWMutex
+	CathodeRevision            uint64
+	CathodeBoot                string
+	cathodeBootstrap           *Config
 	statusLock                 sync.Mutex
 	features                   []features.Feature
 	pendingResolutions         []resolution
@@ -189,6 +195,8 @@ func NewWithContext(ctx context.Context, config *Config) (*Instance, error) {
 }
 
 func initInstanceWithConfig(config *Config, server *Instance) (bool, error) {
+	server.cathodeBootstrap = proto.Clone(config).(*Config)
+	server.CathodeBoot = rand.Text()
 	if err := platform.ReloadEnvSettings(); err != nil {
 		return true, errors.New("failed to reload environment settings").Base(err)
 	}
@@ -401,3 +409,5 @@ func (s *Instance) Start() error {
 
 	return nil
 }
+
+func (s *Instance) CathodeBootstrap() *Config { return proto.Clone(s.cathodeBootstrap).(*Config) }

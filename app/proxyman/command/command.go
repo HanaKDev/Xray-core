@@ -71,6 +71,10 @@ type handlerServer struct {
 }
 
 func (s *handlerServer) AddInbound(ctx context.Context, request *AddInboundRequest) (*AddInboundResponse, error) {
+	s.s.CathodeMu.Lock()
+	defer s.s.CathodeMu.Unlock()
+	defer func() { s.s.CathodeRevision++ }()
+
 	if err := core.AddInboundHandler(s.s, request.Inbound); err != nil {
 		return nil, err
 	}
@@ -79,10 +83,18 @@ func (s *handlerServer) AddInbound(ctx context.Context, request *AddInboundReque
 }
 
 func (s *handlerServer) RemoveInbound(ctx context.Context, request *RemoveInboundRequest) (*RemoveInboundResponse, error) {
+	s.s.CathodeMu.Lock()
+	defer s.s.CathodeMu.Unlock()
+	defer func() { s.s.CathodeRevision++ }()
+
 	return &RemoveInboundResponse{}, s.ihm.RemoveHandler(ctx, request.Tag)
 }
 
 func (s *handlerServer) AlterInbound(ctx context.Context, request *AlterInboundRequest) (*AlterInboundResponse, error) {
+	s.s.CathodeMu.Lock()
+	defer s.s.CathodeMu.Unlock()
+	defer func() { s.s.CathodeRevision++ }()
+
 	rawOperation, err := request.Operation.GetInstance()
 	if err != nil {
 		return nil, errors.New("unknown operation").Base(err)
@@ -163,6 +175,10 @@ func (s *handlerServer) GetInboundUsersCount(ctx context.Context, request *GetIn
 }
 
 func (s *handlerServer) AddOutbound(ctx context.Context, request *AddOutboundRequest) (*AddOutboundResponse, error) {
+	s.s.CathodeMu.Lock()
+	defer s.s.CathodeMu.Unlock()
+	defer func() { s.s.CathodeRevision++ }()
+
 	if err := core.AddOutboundHandler(s.s, request.Outbound); err != nil {
 		return nil, err
 	}
@@ -170,10 +186,18 @@ func (s *handlerServer) AddOutbound(ctx context.Context, request *AddOutboundReq
 }
 
 func (s *handlerServer) RemoveOutbound(ctx context.Context, request *RemoveOutboundRequest) (*RemoveOutboundResponse, error) {
+	s.s.CathodeMu.Lock()
+	defer s.s.CathodeMu.Unlock()
+	defer func() { s.s.CathodeRevision++ }()
+
 	return &RemoveOutboundResponse{}, s.ohm.RemoveHandler(ctx, request.Tag)
 }
 
 func (s *handlerServer) AlterOutbound(ctx context.Context, request *AlterOutboundRequest) (*AlterOutboundResponse, error) {
+	s.s.CathodeMu.Lock()
+	defer s.s.CathodeMu.Unlock()
+	defer func() { s.s.CathodeRevision++ }()
+
 	rawOperation, err := request.Operation.GetInstance()
 	if err != nil {
 		return nil, errors.New("unknown operation").Base(err)
@@ -219,6 +243,7 @@ func (s *service) Register(server *grpc.Server) {
 		hs.ohm = om
 	}, false))
 	RegisterHandlerServiceServer(server, hs)
+	registerCathode(server, hs)
 
 	// For compatibility purposes
 	vCoreDesc := HandlerService_ServiceDesc

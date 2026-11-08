@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -28,6 +29,9 @@ func NewStatsServer(manager feature_stats.Manager) StatsServiceServer {
 }
 
 func (s *statsServer) GetStats(ctx context.Context, request *GetStatsRequest) (*GetStatsResponse, error) {
+	if request.GetReset_() && os.Getenv("XRAY_CATHODE_USAGE_JOURNAL") != "" {
+		return nil, status.Error(codes.FailedPrecondition, "reset disabled for durable accounting")
+	}
 	c := s.stats.GetCounter(request.Name)
 	if c == nil {
 		return nil, status.Error(codes.NotFound, request.Name+" not found.")
@@ -86,6 +90,9 @@ func (s *statsServer) GetAllOnlineUsers(ctx context.Context, request *GetAllOnli
 }
 
 func (s *statsServer) GetUsersStats(ctx context.Context, request *GetUsersStatsRequest) (*GetUsersStatsResponse, error) {
+	if request.GetReset_() && os.Getenv("XRAY_CATHODE_USAGE_JOURNAL") != "" {
+		return nil, status.Error(codes.FailedPrecondition, "reset disabled for durable accounting")
+	}
 	userMap := make(map[string]*UserStat)
 
 	s.stats.VisitOnlineMaps(func(name string, om feature_stats.OnlineMap) bool {
@@ -162,6 +169,9 @@ func (s *statsServer) GetUsersStats(ctx context.Context, request *GetUsersStatsR
 }
 
 func (s *statsServer) QueryStats(ctx context.Context, request *QueryStatsRequest) (*QueryStatsResponse, error) {
+	if request.GetReset_() && os.Getenv("XRAY_CATHODE_USAGE_JOURNAL") != "" {
+		return nil, status.Error(codes.FailedPrecondition, "reset disabled for durable accounting")
+	}
 	response := &QueryStatsResponse{}
 
 	s.stats.VisitCounters(func(name string, c feature_stats.Counter) bool {

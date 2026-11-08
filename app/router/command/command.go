@@ -14,6 +14,7 @@ import (
 
 // routingServer is an implementation of RoutingService.
 type routingServer struct {
+	instance     *core.Instance
 	router       routing.Router
 	routingStats stats.Channel
 }
@@ -54,6 +55,11 @@ func (s *routingServer) OverrideBalancerTarget(ctx context.Context, request *Ove
 }
 
 func (s *routingServer) AddRule(ctx context.Context, request *AddRuleRequest) (*AddRuleResponse, error) {
+	if s.instance != nil {
+		s.instance.CathodeMu.Lock()
+		defer s.instance.CathodeMu.Unlock()
+	}
+
 	if bo, ok := s.router.(routing.Router); ok {
 		return &AddRuleResponse{}, bo.AddRule(request.Config, request.ShouldAppend)
 	}
@@ -61,6 +67,11 @@ func (s *routingServer) AddRule(ctx context.Context, request *AddRuleRequest) (*
 }
 
 func (s *routingServer) RemoveRule(ctx context.Context, request *RemoveRuleRequest) (*RemoveRuleResponse, error) {
+	if s.instance != nil {
+		s.instance.CathodeMu.Lock()
+		defer s.instance.CathodeMu.Unlock()
+	}
+
 	if bo, ok := s.router.(routing.Router); ok {
 		return &RemoveRuleResponse{}, bo.RemoveRule(request.RuleTag)
 	}
@@ -143,6 +154,7 @@ type service struct {
 func (s *service) Register(server *grpc.Server) {
 	common.Must(s.v.RequireFeatures(func(router routing.Router, stats stats.Manager) {
 		rs := NewRoutingServer(router, nil)
+		rs.(*routingServer).instance = s.v
 		RegisterRoutingServiceServer(server, rs)
 
 		// For compatibility purposes
