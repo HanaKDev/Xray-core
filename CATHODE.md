@@ -20,3 +20,5 @@ HandlerService registers /cathode.core.v1.Management/Call. Both sides use protob
 XRAY_CATHODE_LOCKED_RULES is a comma-separated initial ruleTag list. Missing tags fail startup. Locked rules must retain their exact protobuf and position; explicit unlock permits a privileged transaction to reorder, then relock. Existing routing API writes share the guard. All public handler/routing writes share the core management mutex for consistent managed snapshots. Host-level access or arbitrary internal plugins are outside this protection.
 
 For a complete operations guide, release scope and counting boundary see StarHanami/Cathode docs. This source remains MPL-2.0; dependencies retain their own licenses. Do not describe the directed regression suite as a complete upstream test pass.
+
+The reconstructed outbound config excludes synthetic commander and metrics service handlers; their feature configs remain in app settings. Enabling metrics must not produce a spurious extra outbound or a nil proxy config in semantic comparisons. Do not reuse a routed API/metrics tag; an independent loopback API listen address can coexist with existing metrics routing.

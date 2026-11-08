@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/xtls/xray-core/app/commander"
+	"github.com/xtls/xray-core/app/metrics"
 	r "github.com/xtls/xray-core/app/router"
 	st "github.com/xtls/xray-core/app/stats"
 	"github.com/xtls/xray-core/common/protocol"
@@ -152,7 +153,8 @@ func (s *handlerServer) cathode(ctx context.Context, raw *wrapperspb.BytesValue)
 		if h == nil {
 			return
 		}
-		if _, internal := h.(*commander.Outbound); internal {
+		switch h.(type) {
+		case *commander.Outbound, *metrics.Outbound:
 			return
 		}
 		cfg.Outbound = append(cfg.Outbound, &core.OutboundHandlerConfig{Tag: h.Tag(), SenderSettings: h.SenderSettings(), ProxySettings: h.ProxySettings()})
