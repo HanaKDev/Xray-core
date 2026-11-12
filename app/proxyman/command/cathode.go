@@ -315,6 +315,7 @@ func cathodeExpand(p proto.Message) (any, error) {
 		return map[string]any{"type": t.Type, "value": value}, e
 	}
 	out := map[string]any{}
+	dnsHostOrder := cathodeDNSHostOrder(p)
 	var err error
 	var value func(protoreflect.FieldDescriptor, protoreflect.Value) (any, error)
 	value = func(f protoreflect.FieldDescriptor, v protoreflect.Value) (any, error) {
@@ -333,7 +334,11 @@ func cathodeExpand(p proto.Message) (any, error) {
 			a := []any{}
 			l := v.List()
 			for i := 0; i < l.Len(); i++ {
-				z, e := value(f, l.Get(i))
+				index := i
+				if f.Name() == "static_hosts" && dnsHostOrder != nil {
+					index = dnsHostOrder[i]
+				}
+				z, e := value(f, l.Get(index))
 				if e != nil {
 					err = e
 					return false
