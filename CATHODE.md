@@ -6,7 +6,9 @@ This branch extends the upstream core for Cathode's initial small deployment rel
 
 Set XRAY_CATHODE_USAGE_JOURNAL to a private persistent file; enable stats and level 0 statsUserUplink/statsUserDownlink. Positive user counter events are CRC-framed and synchronously fsynced before updating cumulative state. UTC+8 collection dates and a stable ledger ID survive core restarts. Incomplete final lines are truncated; corrupt committed records reject startup. A second writer is rejected.
 
-At roughly 64MiB, the next event atomically compacts into equivalent per-day/email/direction totals, retaining the ledger ID. File and directory synchronization and old/new inode locks protect replacement. A 1GiB hard bound, I/O failure or failed compaction fails the process rather than silently losing source accounting. No automatic retention deletion. Sync I/O has not been throughput benchmarked. This guarantees recoverability of committed Counter.Add events, not exact wire bytes during a crash between network forwarding and counter recording. Public reset requests are rejected while durable accounting is active.
+At roughly 64MiB, the next event atomically compacts into equivalent per-day/email/direction totals, retaining the ledger ID. File and directory synchronization and old/new inode locks protect replacement. A 1GiB hard bound, I/O failure or failed compaction fails the process rather than silently losing source accounting. No automatic retention deletion. Sync I/O has not been throughput benchmarked. This guarantees recoverability of committed Counter.Add events, not exact wire bytes during a crash between network forwarding and counter recording.
+
+StatsService retains upstream volatile counter semantics: reset=true returns and clears the public view, which starts at zero after a process restart. It never clears the separate durable Add-event ledger. Historical totals/dates remain available through Cathode's usage management API; they are not replayed into a legacy reset-based collector after restart. Counter.Set is not a durable usage event.
 
 ## Management RPC
 

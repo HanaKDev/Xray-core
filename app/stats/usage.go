@@ -45,6 +45,7 @@ type usageJournal struct {
 	nextCompact int64
 	id          string
 	size        int64
+	closed      bool
 	totals      map[string]int64
 	entries     map[string]UsageEntry
 }
@@ -172,6 +173,9 @@ func (j *usageJournal) add(name string, delta int64) {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.closed {
+		panic("durable usage journal closed")
+	}
 	if j.size >= j.nextCompact {
 		if err := j.compact(); err != nil {
 			panic(fmt.Errorf("durable usage compaction failed: %w", err))
@@ -191,11 +195,24 @@ func (m *Manager) Usage() (UsageSnapshot, error) {
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.closed {
+		return UsageSnapshot{}, errors.New("durable usage journal closed")
+	}
 	s := UsageSnapshot{Ledger: j.id, Collected: time.Now().UnixMilli(), Size: j.size, Limit: 1 << 30, Entries: []UsageEntry{}}
 	for _, v := range j.entries {
 		s.Entries = append(s.Entries, v)
 	}
 	return s, nil
+}
+
+func (j *usageJournal) close() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.closed {
+		return nil
+	}
+	j.closed = true
+	return j.file.Close()
 }
 
 // compact atomically replaces the event history with equivalent per-day totals.

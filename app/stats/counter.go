@@ -15,9 +15,8 @@ func (c *Counter) Value() int64 {
 
 // Set implements stats.Counter.
 func (c *Counter) Set(newValue int64) int64 {
-	if c.record != nil {
-		return c.Value()
-	}
+	// StatsService resets only the upstream-compatible, volatile view. Durable
+	// accounting records Add events separately and is never reset by this API.
 	return atomic.SwapInt64(&c.value, newValue)
 }
 

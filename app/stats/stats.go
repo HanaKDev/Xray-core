@@ -35,12 +35,6 @@ func NewManager(ctx context.Context, config *Config) (*Manager, error) {
 			return nil, e
 		}
 		m.usage = j
-		for name, value := range j.totals {
-			c := &Counter{value: value}
-			n := name
-			c.record = func(d int64) { j.add(n, d) }
-			m.counters[name] = c
-		}
 	}
 	return m, nil
 }
@@ -53,9 +47,6 @@ func (*Manager) Type() interface{} {
 func (m *Manager) makeCounter(name string) *Counter {
 	c := new(Counter)
 	if m.usage != nil && strings.HasPrefix(name, "user>>>") && strings.Contains(name, ">>>traffic>>>") {
-		m.usage.mu.Lock()
-		c.value = m.usage.totals[name]
-		m.usage.mu.Unlock()
 		c.record = func(d int64) { m.usage.add(name, d) }
 	}
 	return c
@@ -290,6 +281,11 @@ func (m *Manager) Close() error {
 		delete(m.onlineMaps, name)
 	}
 	errs := []error{}
+	if m.usage != nil {
+		if err := m.usage.close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	for name, channel := range m.channels {
 		errors.LogDebug(context.Background(), "remove channel ", name)
 		delete(m.channels, name)
